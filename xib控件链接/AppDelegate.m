@@ -66,8 +66,6 @@
     int ppp = 0;
     for (NSTextCheckingResult *match in matches)
     {
-        ppp ++;
-        
         NSRange range = [match range];
         if (crange.location < range.location)
         {
@@ -133,6 +131,7 @@
         }
         else
         {
+            ppp ++;
             linkName = [NSString stringWithFormat:@"auto_%d_%@",ppp,name];
             NSString* newCon = [NSString stringWithFormat:@"<outlet property=\"%@\" destination=\"%@\" id=\"aaa-aa-%.3d\"/>%@",linkName,idname,ppp,_space];
             
