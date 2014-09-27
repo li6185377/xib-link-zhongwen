@@ -8,6 +8,16 @@
 
 #import "AppDelegate.h"
 
+
+@interface SubViewRange : NSObject
+@property(assign,nonatomic)NSUInteger begin;
+@property(assign,nonatomic)NSUInteger end;
+@end
+
+@implementation SubViewRange
+
+@end
+
 @interface AppDelegate ()
 
 @property (weak) IBOutlet NSWindow *window;
@@ -55,13 +65,36 @@
     NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:regularStr options:NSRegularExpressionAllowCommentsAndWhitespace error:nil];
     NSArray* mat1 = [regex matchesInString:fileContent.lowercaseString options:0 range:NSMakeRange(0, fileContent.length)];
     BOOL hasChange = NO;
-
+    
     NSString *regul2 = @"<string key=\"text\">[^<>]*</string>";
     NSRegularExpression* regex2 = [NSRegularExpression regularExpressionWithPattern:regul2 options:NSRegularExpressionAllowCommentsAndWhitespace error:nil];
     NSArray* mat2 = [regex2 matchesInString:fileContent.lowercaseString options:0 range:NSMakeRange(0, fileContent.length)];
     
     NSMutableArray* matches = [NSMutableArray arrayWithArray:mat1];
     [matches addObjectsFromArray:mat2];
+    
+    NSString *regul3 = @"<subviews>|</subviews>";
+    NSRegularExpression *regex3 = [NSRegularExpression regularExpressionWithPattern:regul3 options:NSRegularExpressionAllowCommentsAndWhitespace error:nil];
+    NSArray *mat3 = [regex3 matchesInString:fileContent.lowercaseString options:0 range:NSMakeRange(0, fileContent.length)];
+    NSMutableArray *subviewRanges = nil;
+    if (mat3.count%2!=0)
+    {
+        //如果不成对,初步判断出问题了,直接忽略
+        mat3 = nil;
+    }
+    else
+    {
+        subviewRanges = [NSMutableArray array];
+        for (int i = 0; i<mat3.count; i=i+2)
+        {
+            SubViewRange *subViewRange = [SubViewRange new];
+            NSTextCheckingResult *result1 = mat3[i];
+            NSTextCheckingResult *result2 = mat3[i+1];
+            subViewRange.begin = result1.range.location+result1.range.length;
+            subViewRange.end = result2.range.location;
+            [subviewRanges addObject:subViewRange];
+        }
+    }
     
     int ppp = 0;
     for (NSTextCheckingResult *match in matches)
@@ -86,7 +119,7 @@
         {
             continue;
         }
-
+        
         NSString* pname = nil;
         NSString* name = nil;
         NSUInteger left = 0;
@@ -119,14 +152,14 @@
         NSUInteger idlength = [fileContent rangeOfString:@"\"" options:0 range:NSMakeRange(idindex, fileContent.length-idindex)].location - idindex;
         
         NSString* idname = [fileContent substringWithRange:NSMakeRange(idindex, idlength)];
- 
+        
         NSString* linkName = nil;
         NSString*  ccont = [fileContent substringWithRange:crange];
         NSRange cid = [ccont rangeOfString:[NSString stringWithFormat:@"destination=\"%@\"",idname]];
         if (cid.length > 0)
         {
-             NSUInteger linkLeft = [ccont rangeOfString:@"property=\"" options:NSBackwardsSearch range:NSMakeRange(0, cid.location)].location + @"property=\"".length;
-             NSUInteger linkLength = [ccont rangeOfString:@"\"" options:0 range:NSMakeRange(linkLeft, cid.location - linkLeft)].location - linkLeft;
+            NSUInteger linkLeft = [ccont rangeOfString:@"property=\"" options:NSBackwardsSearch range:NSMakeRange(0, cid.location)].location + @"property=\"".length;
+            NSUInteger linkLength = [ccont rangeOfString:@"\"" options:0 range:NSMakeRange(linkLeft, cid.location - linkLeft)].location - linkLeft;
             linkName = [ccont substringWithRange:NSMakeRange(linkLeft, linkLength)];
         }
         else
@@ -136,11 +169,19 @@
             NSString* newCon = [NSString stringWithFormat:@"<outlet property=\"%@\" destination=\"%@\" id=\"aaa-aa-%.3d\"/>%@",linkName,idname,ppp,_space];
             
             [fileContent insertString:newCon atIndex:crange.location];
-
+            
             crange.length += newCon.length;
             offset += newCon.length;
+            __block BOOL isTopLevel = YES;
+            [subviewRanges enumerateObjectsUsingBlock:^(SubViewRange *subViewRange, NSUInteger idx, BOOL *stop) {
+                if (crange.location>subViewRange.begin && crange.location<subViewRange.end)
+                {
+                    isTopLevel = NO;
+                    *stop = YES;
+                }
+            }];
             
-            BOOL AA = [self updateHFileWihtXibPath:path vname:name linkName:linkName text:subStr pname:pname];
+            BOOL AA = [self updateHFileWihtXibPath:path vname:name linkName:linkName text:subStr pname:pname isTopLevel:isTopLevel];
             if (AA)
             {
                 hasChange = YES;
@@ -191,7 +232,13 @@
     
     return NSMakeRange(0, 0);
 }
+
 -(BOOL)updateHFileWihtXibPath:(NSString*)xibPath vname:(NSString*)vName linkName:(NSString*)linkName text:(NSString*)text pname:(NSString*)pname
+{
+    return [self updateHFileWihtXibPath:xibPath vname:vName linkName:linkName text:text pname:pname isTopLevel:NO];
+}
+
+-(BOOL)updateHFileWihtXibPath:(NSString*)xibPath vname:(NSString*)vName linkName:(NSString*)linkName text:(NSString*)text pname:(NSString*)pname isTopLevel:(BOOL)topLevel
 {
     NSString* hpath = [xibPath stringByReplacingOccurrencesOfString:@".xib" withString:@".h"];
     if([[NSFileManager defaultManager] fileExistsAtPath:hpath] == NO)
@@ -203,12 +250,13 @@
     NSUInteger index = [hcontent rangeOfString:@"@end" options:NSBackwardsSearch range:NSMakeRange(0, hcontent.length)].location;
     
     NSString* typename = [NSString stringWithFormat:@"UI%@",vName.capitalizedString];
-    NSString* newout = [NSString stringWithFormat:@"@property(weak, nonatomic) IBOutlet %@ *%@;\n",typename,linkName];
+    NSString* newout = [NSString stringWithFormat:@"@property(%@, nonatomic) IBOutlet %@ *%@;\n",topLevel?@"strong":@"weak",typename,linkName];
     
     [hcontent insertString:newout atIndex:index];
     [hcontent writeToFile:hpath atomically:YES encoding:NSUTF8StringEncoding error:nil];
     return YES;
 }
+
 -(void)updateMFileWihtXibPath:(NSString*)xibPath vname:(NSString*)vName linkName:(NSString*)linkName text:(NSString*)text pname:(NSString*)pname
 {
     NSString* mpath = [xibPath stringByReplacingOccurrencesOfString:@".xib" withString:@".m"];
@@ -284,6 +332,8 @@
     self.dic = [NSMutableDictionary dictionary];
     ///目錄
     NSString* dirPath = @"/Users/linyunfeng/Documents/code_git/work4/iPhone/Meetyou_iPhone/Seeyou/Seeyou";
+    //todo replace your dir 
+    dirPath = @"/Users/Ivan/Desktop/test/haha/haha";
     [self replaceFileWithDir:dirPath];
     
     NSMutableString* sb = [NSMutableString string];
